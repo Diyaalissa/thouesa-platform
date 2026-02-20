@@ -1,0 +1,194 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  CUSTOMER
+  ADMIN
+  STAFF
+  ACCOUNTING
+  SHIPPING
+}
+
+
+enum OrderDirection {
+  JO_TO_DZ
+  DZ_TO_JO
+}
+
+enum OrderStatus {
+  PENDING_REVIEW
+  AWAITING_PAYMENT
+  PAYMENT_UNDER_REVIEW
+  CONFIRMED
+  SHIPPED
+  DELIVERED
+  REJECTED
+  CANCELLED
+}
+
+enum PaymentMethod {
+  VISA
+  CLICK_JO
+  MANUAL
+}
+
+model User {
+  id           String   @id @default(cuid())
+  fullName     String
+  email        String   @unique
+
+  phoneCountryCode String?
+  phoneNumber      String?
+  phone        String?
+  passwordHash String
+  role         UserRole @default(CUSTOMER)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  addresses Address[]
+  orders    Order[]
+}
+
+model Address {
+  id        String   @id @default(cuid())
+  userId    String
+  country   String
+  city      String
+  line1     String
+  line2     String?
+  phone     String?
+  label     String?
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  senderFor   Order[] @relation("SenderAddress")
+  receiverFor Order[] @relation("ReceiverAddress")
+
+  createdAt DateTime @default(now())
+}
+
+model Order {
+  orderNumber String @unique
+  id               String         @id @default(cuid())
+  userId           String
+  direction        OrderDirection
+  status           OrderStatus    @default(PENDING_REVIEW)
+
+  senderAddressId  String
+  receiverAddressId String
+
+  weightDeclaredKg Float
+  weightFinalKg    Float?
+  contents         String
+  declaredValue    Float?
+
+  assistedPurchase Boolean        @default(false)
+  purchaseDetails  String?
+
+  insuranceRequested Boolean      @default(false)
+  insuranceValue     Float?
+
+  priceEstimated   Float
+  priceFinal       Float?
+  currency         String
+
+  payments         Payment[]
+  statusLogs       OrderStatusLog[]
+
+  user            User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  senderAddress   Address        @relation("SenderAddress", fields: [senderAddressId], references: [id])
+  receiverAddress Address        @relation("ReceiverAddress", fields: [receiverAddressId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Payment {
+  id          String        @id @default(cuid())
+  orderId     String
+  method      PaymentMethod
+  amount      Float
+  status      String        @default("PENDING") // PENDING | UNDER_REVIEW | CONFIRMED | REJECTED
+  receiptUrl  String?
+  receipts    PaymentReceipt[]
+  reference   String?
+
+  order       Order         @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+}
+
+model PricingRule {
+  id          String         @id @default(cuid())
+  direction   OrderDirection
+  fromKg      Float
+  toKg        Float
+  price       Float
+  currency    String
+
+  createdAt DateTime @default(now())
+}
+
+model EmailOtp {
+  id        String   @id @default(cuid())
+  email     String
+  codeHash  String
+  expiresAt DateTime
+  attempts Int @default(0)
+  lastAttemptAt DateTime?
+  createdAt DateTime @default(now())
+
+  @@index([email])
+}
+
+model Setting {
+  id String @id @default("singleton")
+
+  facebookUrl String?
+  whatsappUrl String?
+
+  shipJodPerKg_JO_TO_DZ Float @default(4)
+  shipDzdPerKg_DZ_TO_JO Float @default(1000)
+  commissionPercent      Float @default(2)
+
+  promoActive            Boolean @default(false)
+  promoName              String?
+  promoDiscountPercent   Float?
+
+  usdtDzdPrice           Float?
+  usdtMarkupPercent      Float?
+
+  updatedAt DateTime @updatedAt
+}
+
+model OrderStatusLog {
+  id          String      @id @default(cuid())
+  orderId     String
+  fromStatus  OrderStatus?
+  toStatus    OrderStatus
+  actorUserId String?
+  note        String?
+  createdAt   DateTime    @default(now())
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  actor User? @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([orderId])
+  @@index([actorUserId])
+}
+
+model PaymentReceipt {
+  id        String   @id @default(cuid())
+  paymentId String
+  url       String
+  createdAt DateTime @default(now())
+
+  payment Payment @relation(fields: [paymentId], references: [id], onDelete: Cascade)
+
+  @@index([paymentId])
+}

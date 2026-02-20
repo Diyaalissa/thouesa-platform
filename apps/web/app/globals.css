@@ -1,0 +1,219 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* =========================================================
+   THOUESA × TASHELAT — White + Soft Gradient Hero
+   - token-based (CSS variables)
+   - modern cards + pills + subtle blur
+   ========================================================= */
+
+:root{
+  /* Base (Light) */
+  --bg0: #ffffff;
+  --bg1: #fff7ed;             /* orange-50 tint */
+  --card: rgba(255,255,255,.78);
+  --stroke: rgba(255, 237, 213, .95);   /* orange-100/200 */
+  --stroke2: rgba(253, 186, 116, .55);  /* orange-300 */
+  --text: #111827;            /* slate-900 */
+  --muted: #475569;           /* slate-600 */
+  --muted2:#64748b;           /* slate-500 */
+
+  /* Brand (Orange identity) */
+  --brand: #f97316;           /* orange-500 */
+  --brand2:#fb923c;           /* orange-400 */
+  --brand3:#ea580c;           /* orange-600 */
+
+  /* Elevation */
+  --shadow-1: 0 1px 0 rgba(2,6,23,.04), 0 14px 30px rgba(2,6,23,.08);
+  --shadow-2: 0 18px 44px rgba(2,6,23,.12);
+
+  /* Radius */
+  --r-xs: 10px;
+  --r-sm: 14px;
+  --r-md: 18px;
+  --r-lg: 22px;
+  --pill: 999px;
+}
+
+*{ box-sizing:border-box; }
+html,body{ height:100%; }
+body{
+  margin:0;
+  color:var(--text);
+  font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, "Noto Sans Arabic", "Noto Sans", sans-serif;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+
+  /* Soft modern background */
+  background:
+    radial-gradient(900px 520px at 12% -10%, rgba(249,115,22,.18), transparent 60%),
+    radial-gradient(720px 460px at 92% 0%, rgba(251,146,60,.14), transparent 62%),
+    radial-gradient(820px 520px at 60% 92%, rgba(99,102,241,.10), transparent 62%),
+    linear-gradient(180deg, var(--bg0), var(--bg1));
+}
+
+a{ color:inherit; text-decoration:none; }
+button, input, select, textarea{ font:inherit; }
+#app{ min-height:100%; }
+html[dir="rtl"] body{ text-align:right; }
+
+/* =========================
+   Primitives
+   ========================= */
+.topbar{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:16px;
+  padding: 14px 14px;
+  border: 1px solid var(--stroke);
+  border-radius: var(--r-lg);
+  background: rgba(255,255,255,.70);
+  backdrop-filter: blur(10px);
+  box-shadow: var(--shadow-1);
+}
+
+.brandRow{
+  display:flex;
+  align-items:center;
+  gap:12px;
+  min-width: 220px;
+}
+.brandDot{
+  width:42px;height:42px;border-radius:14px;
+  background:
+    radial-gradient(10px 10px at 30% 30%, rgba(255,255,255,.30), transparent 60%),
+    linear-gradient(135deg, var(--brand2), var(--brand3));
+  box-shadow: 0 12px 26px rgba(249,115,22,.22);
+}
+
+.badge{
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+  padding:8px 10px;
+  border-radius: var(--pill);
+  border:1px solid var(--stroke);
+  background: rgba(255,255,255,.72);
+  font-size:12px;
+  color: var(--muted2);
+}
+
+.card{
+  border:1px solid var(--stroke);
+  background: var(--card);
+  border-radius: var(--r-lg);
+  overflow:hidden;
+  box-shadow: var(--shadow-1);
+  backdrop-filter: blur(10px);
+}
+.cardHead{
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:12px;
+  padding:16px 16px 10px;
+  border-bottom:1px solid rgba(2,6,23,.06);
+}
+.cardTitle{ font-size:18px; font-weight:900; }
+.cardBody{ padding: 14px 16px 16px; }
+
+.pill{
+  display:inline-flex;
+  align-items:center;
+  gap:10px;
+  padding:8px 12px;
+  border:1px solid var(--stroke);
+  background: rgba(255,255,255,.70);
+  border-radius: var(--pill);
+  color: var(--muted);
+  font-size: 12px;
+  width: fit-content;
+}
+
+.btn{
+  appearance:none;
+  border:1px solid var(--stroke);
+  background: rgba(255,255,255,.78);
+  color: var(--text);
+  cursor:pointer;
+  padding: 10px 14px;
+  border-radius: var(--pill);
+  transition: transform .08s ease, background .15s ease, border-color .15s ease, box-shadow .15s ease;
+}
+.btn:hover{ background: rgba(255,255,255,.92); border-color: var(--stroke2); box-shadow: 0 10px 22px rgba(2,6,23,.08); }
+.btn:active{ transform: translateY(1px); }
+
+.btnPrimary{
+  border-color: rgba(249,115,22,.55);
+  background: linear-gradient(180deg, var(--brand2), var(--brand));
+  color: #1f2937;
+  font-weight: 900;
+}
+.btnPrimary:hover{ filter: brightness(1.02); }
+
+.input, input.input, select, textarea{
+  width:100%;
+  padding: 11px 12px;
+  border-radius: var(--r-sm);
+  border: 1px solid rgba(148,163,184,.45);
+  background: rgba(255,255,255,.90);
+  color: var(--text);
+  outline: none;
+  transition: border-color .15s ease, box-shadow .15s ease, background .15s ease;
+}
+.input:focus, input.input:focus, select:focus, textarea:focus{
+  border-color: rgba(249,115,22,.55);
+  box-shadow: 0 0 0 4px rgba(249,115,22,.14);
+}
+
+.h1{ margin:0; font-size:34px; line-height:1.1; letter-spacing:-.6px; font-weight:950; }
+.p{ margin:0; color:var(--muted); font-size:15px; line-height:1.65; }
+.small{ font-size:12px; color:var(--muted2); }
+
+/* Hero */
+.hero{
+  display:grid;
+  grid-template-columns: 1.15fr .85fr;
+  gap:18px;
+}
+@media (max-width: 900px){ .hero{ grid-template-columns: 1fr; } }
+.heroBox{
+  border:1px solid var(--stroke);
+  border-radius: var(--r-lg);
+  background:
+    radial-gradient(900px 420px at 10% 0%, rgba(249,115,22,.18), transparent 60%),
+    radial-gradient(900px 420px at 85% 0%, rgba(251,146,60,.14), transparent 60%),
+    rgba(255,255,255,.70);
+  backdrop-filter: blur(10px);
+  box-shadow: var(--shadow-1);
+  padding: 18px;
+}
+.heroActions{ display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:12px; }
+
+/* Reduce motion */
+@media (prefers-reduced-motion: reduce){
+  *{ transition:none !important; scroll-behavior:auto !important; }
+}
+
+/* Status pills */
+.statusPill{
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+  padding:6px 10px;
+  border-radius: var(--pill);
+  font-size: 12px;
+  border: 1px solid var(--stroke);
+  background: rgba(255,255,255,.74);
+  color: var(--text);
+}
+.statusPill.pending{ border-color: rgba(249,115,22,.45); background: rgba(249,115,22,.10); }
+.statusPill.review{ border-color: rgba(99,102,241,.35); background: rgba(99,102,241,.10); }
+.statusPill.ok{ border-color: rgba(34,197,94,.35); background: rgba(34,197,94,.10); }
+.statusPill.bad{ border-color: rgba(239,68,68,.35); background: rgba(239,68,68,.10); }
+
+/* Tiny divider */
+.sep{ height:1px; background: rgba(2,6,23,.08); margin: 12px 0; }

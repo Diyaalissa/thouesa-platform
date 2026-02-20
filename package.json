@@ -1,0 +1,26 @@
+{
+  "name": "thouesa-tashelat-platform",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm-run-all -p dev:api dev:web",
+    "dev:web": "pnpm -C apps/web dev",
+    "dev:api": "pnpm -C apps/api dev",
+    "build": "npm-run-all -s build:api build:web",
+    "build:web": "npm --workspace apps/web run build",
+    "build:api": "npm --workspace apps/api run build",
+    "lint": "npm-run-all -s lint:api lint:web",
+    "lint:web": "npm --workspace apps/web run lint",
+    "lint:api": "npm --workspace apps/api run lint",
+    "db:migrate": "pnpm -C apps/api exec prisma migrate dev",
+    "db:seed": "pnpm -C apps/api exec tsx prisma/seed.ts",
+    "db:generate": "pnpm -C apps/api exec prisma generate",
+    "dev:admin": "pnpm -C apps/admin dev"
+  },
+  "devDependencies": {
+    "npm-run-all": "^4.1.5"
+  }
+}

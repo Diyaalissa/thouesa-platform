@@ -1,138 +1,203 @@
-import { generateSequentialOrderNumber } from "../utils/orderNumber";
 import { Router } from "express";
-import { z } from "zod";
 import multer from "multer";
 import path from "path";
 import fs from "fs";
-import { prisma } from "../lib/prisma.js";
-import { requireAuth, AuthRequest } from "../middleware/auth.js";
-import { OrderDirection, OrderStatus, PaymentMethod } from "@prisma/client";
+import { PrismaClient, ShippingMethod } from "@prisma/client";
+import { requireAuth } from "../middleware/auth";
 
+const prisma = new PrismaClient();
 export const ordersRouter = Router();
 
-const uploadDir = process.env.UPLOAD_DIR || "uploads";
-if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
+/**
+ * Storage for uploaded receipts.
+ * Served via express static: /uploads in src/server.ts
+ */
+const UPLOAD_DIR = path.join(process.cwd(), "uploads");
+if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
 const storage = multer.diskStorage({
-  destination: (_req, _file, cb) => cb(null, uploadDir),
-  filename: (_req, file, cb) => cb(null, `${Date.now()}-${file.originalname}`.replace(/\s+/g, "_")),
+  destination: (_req, _file, cb) => cb(null, UPLOAD_DIR),
+  filename: (_req, file, cb) => {
+    const safeBase = (file.originalname || "receipt").replace(/[^a-zA-Z0-9._-]/g, "_");
+    cb(null, `${Date.now()}_${safeBase}`);
+  },
 });
 const upload = multer({ storage });
 
-const createOrderSchema = z.object({
-  direction: z.enum(["JO_TO_DZ", "DZ_TO_JO"]),
-  sender: z.object({
-    country: z.string().min(2),
-    city: z.string().min(2),
-    line1: z.string().min(3),
-    line2: z.string().optional(),
-    phone: z.string().optional(),
-    label: z.string().optional(),
-  }),
-  receiver: z.object({
-    country: z.string().min(2),
-    city: z.string().min(2),
-    line1: z.string().min(3),
-    line2: z.string().optional(),
-    phone: z.string().optional(),
-    label: z.string().optional(),
-  }),
-  weightDeclaredKg: z.number().positive(),
-  contents: z.string().min(3),
-  declaredValue: z.number().optional(),
-  assistedPurchase: z.boolean().default(false),
-  purchaseDetails: z.string().optional(),
-  insuranceRequested: z.boolean().default(false),
-  insuranceValue: z.number().optional(),
-  priceEstimated: z.number().positive(),
-  currency: z.string().min(2),
+function toFloat(v: unknown): number | null {
+  if (v === null || v === undefined) return null;
+  const n = typeof v === "number" ? v : Number(String(v).trim());
+  return Number.isFinite(n) ? n : null;
+}
+
+async function nextOrderNumber(): Promise<string> {
+  // Format: TH-YYYYMMDD-0001 (per day counter)
+  const ymd = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+  const prefix = `TH-${ymd}-`;
+
+  const last = await prisma.order.findFirst({
+    where: { orderNumber: { startsWith: prefix } },
+    orderBy: { createdAt: "desc" },
+    select: { orderNumber: true },
+  });
+
+  let next = 1;
+  if (last?.orderNumber) {
+    const parts = last.orderNumber.split("-");
+    const tail = parts[parts.length - 1] || "0";
+    const prev = parseInt(tail, 10);
+    if (Number.isFinite(prev)) next = prev + 1;
+  }
+
+  return `${prefix}${String(next).padStart(4, "0")}`;
+}
+
+/**
+ * GET /orders
+ * - Customer: their own orders
+ * - Admin: all orders
+ */
+ordersRouter.get("/", requireAuth, async (req, res) => {
+  try {
+    const userId = req.user!.id;
+    const isAdmin = req.user!.role === "ADMIN";
+
+    const orders = await prisma.order.findMany({
+      where: isAdmin ? {} : { userId },
+      orderBy: { createdAt: "desc" },
+      include: {
+        payments: { orderBy: { createdAt: "desc" } },
+      },
+    });
+
+    res.json(orders);
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || "Failed to fetch orders" });
+  }
 });
 
-ordersRouter.post("/", requireAuth, async (req: AuthRequest, res) => {
-  const parsed = createOrderSchema.safeParse(req.body);
-  if (!parsed.success) return res.status(400).json({ error: "VALIDATION", details: parsed.error.flatten() });
+/**
+ * GET /orders/:id
+ */
+ordersRouter.get("/:id", requireAuth, async (req, res) => {
+  try {
+    const id = String(req.params.id);
+    const userId = req.user!.id;
+    const isAdmin = req.user!.role === "ADMIN";
 
-  const d = parsed.data;
+    const order = await prisma.order.findUnique({
+      where: { id },
+      include: {
+        payments: { include: { receipts: true }, orderBy: { createdAt: "desc" } },
+      },
+    });
 
-  const [sender, receiver] = await Promise.all([
-    prisma.address.create({ data: { userId: req.user!.id, ...d.sender } }),
-    prisma.address.create({ data: { userId: req.user!.id, ...d.receiver } }),
-  ]);
+    if (!order) return res.status(404).json({ error: "Order not found" });
+    if (!isAdmin && order.userId !== userId) return res.status(403).json({ error: "Forbidden" });
 
-  const order = const orderNumber = generateSequentialOrderNumber();
+    res.json(order);
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || "Failed to fetch order" });
+  }
+});
 
-await prisma.order.create({
-  data: {
-    orderNumber,
-    data: {
-      userId: req.user!.id,
-      direction: d.direction as OrderDirection,
-      status: OrderStatus.AWAITING_PAYMENT,
-      senderAddressId: sender.id,
-      receiverAddressId: receiver.id,
-      weightDeclaredKg: d.weightDeclaredKg,
-      contents: d.contents,
-      declaredValue: d.declaredValue,
-      assistedPurchase: d.assistedPurchase,
-      purchaseDetails: d.purchaseDetails,
-      insuranceRequested: d.insuranceRequested,
-      insuranceValue: d.insuranceValue,
-      priceEstimated: d.priceEstimated,
-      currency: d.currency,
-      payments: {
-        create: {
-          method: PaymentMethod.MANUAL,
-          amount: d.priceEstimated,
-          status: "PENDING",
+/**
+ * POST /orders
+ * Creates a new order for the logged-in customer.
+ */
+ordersRouter.post("/", requireAuth, async (req, res) => {
+  try {
+    const userId = req.user!.id;
+
+    const direction = String(req.body?.direction || "").trim();
+    const shippingMethod = String(req.body?.shippingMethod || "").toUpperCase();
+    const purchasePlatform = String(req.body?.purchasePlatform || "").toUpperCase();
+
+    const weightKg = toFloat(req.body?.weightKg);
+    const declaredValue = toFloat(req.body?.declaredValue);
+    const insuranceRequested = Boolean(req.body?.insuranceRequested);
+    const insuranceValue = toFloat(req.body?.insuranceValue);
+    const notes = typeof req.body?.notes === "string" ? req.body.notes : null;
+
+    if (!direction || !shippingMethod || !purchasePlatform) {
+      return res.status(400).json({ error: "Missing required fields" });
+    }
+    if (weightKg === null || weightKg <= 0) {
+      return res.status(400).json({ error: "weightKg must be a positive number" });
+    }
+
+    const allowedDirections = ["JO_TO_DZ", "DZ_TO_JO"] as const;
+if (!allowedDirections.includes(direction as any)) {
+  return res.status(400).json({ error: "Invalid direction" });
+}
+    if (!Object.values(ShippingMethod).includes(shippingMethod as any))
+  return res.status(400).json({ error: "Invalid shippingMethod" });
+
+    const orderNumber = await nextOrderNumber();
+
+    const order = await prisma.order.create({
+      data: {
+        userId,
+        orderNumber,
+        status: "NEW",
+        direction,
+        shippingMethod: shippingMethod as ShippingMethod,
+        purchasePlatform,
+        weightKg,
+        declaredValue,
+        insuranceRequested,
+        insuranceValue: insuranceValue ?? null,
+        notes,
+      },
+    });
+
+    res.status(201).json(order);
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || "Failed to create order" });
+  }
+});
+
+/**
+ * POST /orders/:id/receipt
+ * Upload payment receipt (manual payment).
+ * Body: amount, reference (optional) + file field name "file"
+ */
+ordersRouter.post("/:id/receipt", requireAuth, upload.single("file"), async (req, res) => {
+  try {
+    const id = String(req.params.id);
+    const userId = req.user!.id;
+    const isAdmin = req.user!.role === "ADMIN";
+
+    const order = await prisma.order.findUnique({ where: { id } });
+    if (!order) return res.status(404).json({ error: "Order not found" });
+    if (!isAdmin && order.userId !== userId) return res.status(403).json({ error: "Forbidden" });
+
+    const amount = toFloat(req.body?.amount);
+    if (amount === null || amount <= 0) return res.status(400).json({ error: "amount must be a positive number" });
+
+    const file = req.file;
+    if (!file) return res.status(400).json({ error: "Missing receipt file" });
+
+    const publicUrl = `/uploads/${file.filename}`;
+    const reference = typeof req.body?.reference === "string" ? req.body.reference : null;
+
+    const payment = await prisma.payment.create({
+      data: {
+        orderId: id,
+        method: "MANUAL",
+        amount,
+        status: "UNDER_REVIEW",
+        receiptUrl: publicUrl,
+        reference: reference ?? undefined,
+        receipts: {
+          create: [{ url: publicUrl }],
         },
       },
-    },
-    include: { payments: true },
-  });
+      include: { receipts: true },
+    });
 
-  res.json({ order });
-});
-
-ordersRouter.get("/", requireAuth, async (req: AuthRequest, res) => {
-  const orders = await prisma.order.findMany({
-    where: { userId: req.user!.id },
-    orderBy: { createdAt: "desc" },
-    include: { payments: true },
-  });
-  res.json({ orders });
-});
-
-ordersRouter.get("/:id", requireAuth, async (req: AuthRequest, res) => {
-  const order = await prisma.order.findFirst({
-    where: { id: req.params.id, userId: req.user!.id },
-    include: { senderAddress: true, receiverAddress: true, payments: true },
-  });
-  if (!order) return res.status(404).json({ error: "NOT_FOUND" });
-  res.json({ order });
-});
-
-// Upload receipt for the latest payment
-ordersRouter.post("/:id/receipt", requireAuth, upload.single("receipt"), async (req: AuthRequest, res) => {
-  const order = await prisma.order.findFirst({ where: { id: req.params.id, userId: req.user!.id }, include: { payments: true } });
-  if (!order) return res.status(404).json({ error: "NOT_FOUND" });
-
-  const payment = order.payments[0];
-  if (!payment) return res.status(400).json({ error: "NO_PAYMENT" });
-  if (!req.file) return res.status(400).json({ error: "NO_FILE" });
-
-  const receiptUrl = `/uploads/${path.basename(req.file.path)}`;
-
-  await prisma.paymentReceipt.create({ data: { paymentId: payment.id, url: receiptUrl } });
-
-  await prisma.payment.update({
-    where: { id: payment.id },
-    data: { receiptUrl, status: "UNDER_REVIEW" },
-  });
-
-  await prisma.order.update({
-    where: { id: order.id },
-    data: { status: OrderStatus.PAYMENT_UNDER_REVIEW },
-  });
-
-  res.json({ ok: true, receiptUrl });
+    res.status(201).json(payment);
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || "Failed to upload receipt" });
+  }
 });

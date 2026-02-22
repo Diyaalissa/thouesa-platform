@@ -5,20 +5,27 @@ import { z } from "zod";
 
 export const settingsRouter = Router();
 
+/**
+ * جلب الإعدادات العامة (متاحة للجميع)
+ */
 settingsRouter.get("/public", async (_req, res) => {
-  const s = await prisma.setting.upsert({
-    where: { id: "singleton" },
-    update: {},
-    create: { id: "singleton" },
-  });
+  try {
+    const s = await prisma.setting.upsert({
+      where: { id: "singleton" },
+      update: {},
+      create: { id: "singleton" },
+    });
 
-  res.json({
-    facebookUrl: s.facebookUrl,
-    whatsappUrl: s.whatsappUrl,
-    promoActive: s.promoActive,
-    promoName: s.promoName,
-    promoDiscountPercent: s.promoDiscountPercent,
-  });
+    res.json({
+      facebookUrl: s.facebookUrl,
+      whatsappUrl: s.whatsappUrl,
+      promoActive: s.promoActive,
+      promoName: s.promoName,
+      promoDiscountPercent: s.promoDiscountPercent,
+    });
+  } catch (error) {
+    res.status(500).json({ error: "FAILED_TO_FETCH_SETTINGS" });
+  }
 });
 
 const updateSchema = z.object({
@@ -34,23 +41,37 @@ const updateSchema = z.object({
   usdtMarkupPercent: z.number().optional().nullable(),
 });
 
-settingsRouter.get("/admin", requireAuth("ADMIN"), async (_req, res) => {
-  const s = await prisma.setting.upsert({
-    where: { id: "singleton" },
-    update: {},
-    create: { id: "singleton" },
-  });
-  res.json({ setting: s });
+/**
+ * جلب الإعدادات كاملة للمدير (تم تصحيح requireAuth بحذف الأقواس)
+ */
+settingsRouter.get("/admin", requireAuth, async (_req, res) => {
+  try {
+    const s = await prisma.setting.upsert({
+      where: { id: "singleton" },
+      update: {},
+      create: { id: "singleton" },
+    });
+    res.json({ setting: s });
+  } catch (error) {
+    res.status(500).json({ error: "ADMIN_SETTINGS_ERROR" });
+  }
 });
 
-settingsRouter.put("/admin", requireAuth("ADMIN"), async (req, res) => {
-  const parsed = updateSchema.safeParse(req.body);
-  if (!parsed.success) return res.status(400).json({ error: "VALIDATION" });
+/**
+ * تحديث الإعدادات (تم تصحيح requireAuth بحذف الأقواس)
+ */
+settingsRouter.put("/admin", requireAuth, async (req, res) => {
+  try {
+    const parsed = updateSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: "VALIDATION" });
 
-  const s = await prisma.setting.upsert({
-    where: { id: "singleton" },
-    update: parsed.data,
-    create: { id: "singleton", ...parsed.data },
-  });
-  res.json({ setting: s });
+    const s = await prisma.setting.upsert({
+      where: { id: "singleton" },
+      update: parsed.data,
+      create: { id: "singleton", ...parsed.data },
+    });
+    res.json({ setting: s });
+  } catch (error) {
+    res.status(500).json({ error: "UPDATE_SETTINGS_ERROR" });
+  }
 });

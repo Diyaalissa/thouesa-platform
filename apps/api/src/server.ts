@@ -1,10 +1,15 @@
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
-import { helmetMiddleware, generalLimiter } from "./middleware/security.js";
-import { logger } from "./middleware/logger.js";
 import path from "path";
 
+// --- استدعاء مكتبات الحماية والمراقبة ---
+import pinoHttp from 'pino-http';
+import rateLimit from 'express-rate-limit';
+import { logger } from './logger.js';
+import { helmetMiddleware } from "./middleware/security.js";
+
+// --- استدعاء المسارات ---
 import { authRouter } from "./routes/auth.js";
 import { pricingRouter } from "./routes/pricing.js";
 import { ordersRouter } from "./routes/orders.js";
@@ -14,19 +19,48 @@ import { publicRouter } from "./routes/public.js";
 
 const app = express();
 
-app.use(logger);
+// 1. المراقبة والأمان
+app.use(pinoHttp({ 
+  logger,
+  customSuccessMessage: (req, res) => `${req.method} ${req.url} completed with ${res.statusCode}`,
+  customErrorMessage: (req, res, err) => `${req.method} ${req.url} failed: ${err.message}`
+}));
+
 app.use(helmetMiddleware);
-app.use(generalLimiter);
 
+const apiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 100,
+  message: { error: 'عذراً، لقد تجاوزت الحد المسموح. يرجى المحاولة لاحقاً.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+app.use(apiLimiter);
 
-app.use(cors({ origin: process.env.CORS_ORIGIN || true }));
-app.use(express.json({ limit: "2mb" }));
+// 2. معالجة البيانات (المفتاح لحل مشكلة VALIDATION)
+app.use(cors({ origin: true, credentials: true }));
 
-// static uploads
+// دعم JSON والنصوص العادية
+app.use(express.json({ limit: "5mb" }));
+app.use(express.text({ type: "text/plain" }));
+app.use(express.urlencoded({ extended: true, limit: "5mb" }));
+
+// Middleware ذكي لتحويل النص القادم من المتصفح إلى JSON
+app.use((req, res, next) => {
+  if (req.is('text/plain') && typeof req.body === 'string') {
+    try {
+      req.body = JSON.parse(req.body);
+    } catch (e) {
+      // ليس JSON، نتركه كما هو
+    }
+  }
+  next();
+});
+
 app.use("/uploads", express.static(path.resolve(process.env.UPLOAD_DIR || "uploads")));
-
 app.get("/health", (_req, res) => res.json({ ok: true }));
 
+// 3. المسارات
 app.use("/auth", authRouter);
 app.use("/pricing", pricingRouter);
 app.use("/orders", ordersRouter);
@@ -34,12 +68,13 @@ app.use("/admin", adminRouter);
 app.use("/settings", settingsRouter);
 app.use("/public", publicRouter);
 
-const port = Number(process.env.PORT || 4000);
-app.listen(port, () => {
-  console.log(`API listening on http://localhost:${port}`);
+// 4. معالجة الأخطاء
+app.use((err: any, req: any, res: any, _next: any) => {
+  logger.error({ err, url: req.url, body: req.body }, "CRITICAL_ERROR");
+  res.status(err.status || 500).json({ error: "INTERNAL_ERROR" });
 });
 
-app.use((err: any, _req: any, res: any, _next: any) => {
-  console.error("[API_ERROR]", err);
-  res.status(500).json({ error: "INTERNAL_ERROR" });
+const port = Number(process.env.PORT || 4000);
+app.listen(port, () => {
+  logger.info(`🚀 API listening on http://localhost:${port}`);
 });

@@ -2,15 +2,18 @@ import { Router } from "express";
 import multer from "multer";
 import path from "path";
 import fs from "fs";
-import { PrismaClient, ShippingMethod } from "@prisma/client";
-import { requireAuth } from "../middleware/auth";
+import { PrismaClient } from "@prisma/client";
+import { requireAuth } from "../middleware/auth.js"; // إضافة .js للالتزام بنظام ESM
+import { logger } from "../logger.js"; // استخدام نظام التسجيل الجديد
 
 const prisma = new PrismaClient();
 export const ordersRouter = Router();
 
+// تعريف أنواع الشحن المتوافقة مع قاعدة البيانات
+const VALID_SHIPPING_METHODS = ["AIR", "SEA", "EXPRESS"] as const;
+
 /**
- * Storage for uploaded receipts.
- * Served via express static: /uploads in src/server.ts
+ * إعداد التخزين للإيصالات المرفوعة
  */
 const UPLOAD_DIR = path.join(process.cwd(), "uploads");
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
@@ -30,8 +33,10 @@ function toFloat(v: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+/**
+ * توليد رقم الطلب التالي (تلقائي)
+ */
 async function nextOrderNumber(): Promise<string> {
-  // Format: TH-YYYYMMDD-0001 (per day counter)
   const ymd = new Date().toISOString().slice(0, 10).replace(/-/g, "");
   const prefix = `TH-${ymd}-`;
 
@@ -54,8 +59,6 @@ async function nextOrderNumber(): Promise<string> {
 
 /**
  * GET /orders
- * - Customer: their own orders
- * - Admin: all orders
  */
 ordersRouter.get("/", requireAuth, async (req, res) => {
   try {
@@ -72,7 +75,8 @@ ordersRouter.get("/", requireAuth, async (req, res) => {
 
     res.json(orders);
   } catch (e: any) {
-    res.status(500).json({ error: e?.message || "Failed to fetch orders" });
+    logger.error(e, "فشل جلب الطلبات");
+    res.status(500).json({ error: "INTERNAL_ERROR" });
   }
 });
 
@@ -97,13 +101,14 @@ ordersRouter.get("/:id", requireAuth, async (req, res) => {
 
     res.json(order);
   } catch (e: any) {
-    res.status(500).json({ error: e?.message || "Failed to fetch order" });
+    logger.error(e, `فشل جلب الطلب رقم: ${req.params.id}`);
+    res.status(500).json({ error: "INTERNAL_ERROR" });
   }
 });
 
 /**
  * POST /orders
- * Creates a new order for the logged-in customer.
+ * إنشاء طلب جديد
  */
 ordersRouter.post("/", requireAuth, async (req, res) => {
   try {
@@ -119,19 +124,24 @@ ordersRouter.post("/", requireAuth, async (req, res) => {
     const insuranceValue = toFloat(req.body?.insuranceValue);
     const notes = typeof req.body?.notes === "string" ? req.body.notes : null;
 
+    // التحقق من الحقول الإجبارية
     if (!direction || !shippingMethod || !purchasePlatform) {
       return res.status(400).json({ error: "Missing required fields" });
     }
+
     if (weightKg === null || weightKg <= 0) {
       return res.status(400).json({ error: "weightKg must be a positive number" });
     }
 
-    const allowedDirections = ["JO_TO_DZ", "DZ_TO_JO"] as const;
-if (!allowedDirections.includes(direction as any)) {
-  return res.status(400).json({ error: "Invalid direction" });
-}
-    if (!Object.values(ShippingMethod).includes(shippingMethod as any))
-  return res.status(400).json({ error: "Invalid shippingMethod" });
+    // التحقق من صحة الاتجاه وطريقة الشحن
+    const allowedDirections = ["JO_TO_DZ", "DZ_TO_JO"];
+    if (!allowedDirections.includes(direction)) {
+      return res.status(400).json({ error: "Invalid direction" });
+    }
+
+    if (!VALID_SHIPPING_METHODS.includes(shippingMethod as any)) {
+      return res.status(400).json({ error: "Invalid shippingMethod" });
+    }
 
     const orderNumber = await nextOrderNumber();
 
@@ -140,8 +150,8 @@ if (!allowedDirections.includes(direction as any)) {
         userId,
         orderNumber,
         status: "NEW",
-        direction,
-        shippingMethod: shippingMethod as ShippingMethod,
+        direction: direction as any,
+        shippingMethod: shippingMethod as any,
         purchasePlatform,
         weightKg,
         declaredValue,
@@ -151,16 +161,17 @@ if (!allowedDirections.includes(direction as any)) {
       },
     });
 
+    logger.info({ orderId: order.id, orderNumber }, "تم إنشاء طلب جديد بنجاح");
     res.status(201).json(order);
   } catch (e: any) {
-    res.status(500).json({ error: e?.message || "Failed to create order" });
+    logger.error(e, "فشل إنشاء الطلب");
+    res.status(500).json({ error: "INTERNAL_ERROR" });
   }
 });
 
 /**
  * POST /orders/:id/receipt
- * Upload payment receipt (manual payment).
- * Body: amount, reference (optional) + file field name "file"
+ * رفع إيصال الدفع
  */
 ordersRouter.post("/:id/receipt", requireAuth, upload.single("file"), async (req, res) => {
   try {
@@ -196,8 +207,10 @@ ordersRouter.post("/:id/receipt", requireAuth, upload.single("file"), async (req
       include: { receipts: true },
     });
 
+    logger.info({ orderId: id, paymentId: payment.id }, "تم رفع إيصال دفع جديد");
     res.status(201).json(payment);
   } catch (e: any) {
-    res.status(500).json({ error: e?.message || "Failed to upload receipt" });
+    logger.error(e, "فشل رفع إيصال الدفع");
+    res.status(500).json({ error: "INTERNAL_ERROR" });
   }
 });

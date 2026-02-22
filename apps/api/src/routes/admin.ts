@@ -5,7 +5,74 @@ import { z } from "zod";
 import { OrderStatus } from "@prisma/client";
 import { logger } from "../logger.js";
 import crypto from "crypto";
+import { FinanceService } from "../services/finance.service.js";
 
+/**
+ * 6. تقرير مالي شامل (Phase 5)
+ */
+adminRouter.get("/finance/report", async (req, res, next) => {
+  try {
+    const { start, end } = req.query;
+    const startDate = start ? new Date(start as string) : undefined;
+    const endDate = end ? new Date(end as string) : undefined;
+
+    const report = await FinanceService.getRevenueReport(startDate, endDate);
+    
+    res.json({
+      success: true,
+      data: report
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * 7. جلب بيانات الفاتورة لطلب محدد
+ */
+adminRouter.get("/orders/:id/invoice", async (req, res, next) => {
+  try {
+    const order = await prisma.order.findUnique({
+      where: { id: req.params.id },
+      include: {
+        user: { select: { fullName: true, email: true } },
+        senderAddress: true,
+        receiverAddress: true,
+        payments: { where: { status: "CONFIRMED" } }
+      }
+    });
+
+    if (!order) return res.status(404).json({ success: false, error: "ORDER_NOT_FOUND" });
+
+    // حساب التفاصيل المالية للفاتورة
+    const settings = await prisma.setting.findUnique({ where: { id: "singleton" } });
+    const amount = order.priceFinal || order.priceEstimated || 0;
+    const taxAmount = 0; // يمكن إضافته لاحقاً من الإعدادات
+
+    res.json({
+      success: true,
+      data: {
+        invoiceNumber: `INV-${order.orderNumber}`,
+        date: new Date(),
+        customer: order.user,
+        details: {
+          orderNumber: order.orderNumber,
+          weight: order.weightFinalKg || order.weightDeclaredKg,
+          direction: order.direction,
+          amount: amount,
+          commission: (amount * (settings?.commissionPercent || 0)) / 100,
+          total: amount + taxAmount
+        },
+        addresses: {
+          from: order.senderAddress,
+          to: order.receiverAddress
+        }
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+});
 export const adminRouter = Router();
 
 adminRouter.use(requireAuth, requireAdmin);

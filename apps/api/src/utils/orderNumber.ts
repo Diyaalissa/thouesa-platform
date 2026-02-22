@@ -1,16 +1,27 @@
+import { prisma } from "../lib/prisma.js";
+import type { OrderDirection } from "@prisma/client";
 
-let yearlyCounters: Record<string, number> = {};
+export async function nextOrderNumber(direction: OrderDirection) {
+  const today = new Date().toISOString().slice(0, 10).replace(/-/g, "");
 
-export function generateSequentialOrderNumber(): string {
-  const year = new Date().getFullYear().toString();
+  const seq = await prisma.orderSequence.upsert({
+    where: {
+      date_direction: {
+        date: today,
+        direction,
+      },
+    },
+    update: {
+      lastSequence: { increment: 1 },
+    },
+    create: {
+      date: today,
+      direction,
+      lastSequence: 1,
+    },
+  });
 
-  if (!yearlyCounters[year]) {
-    yearlyCounters[year] = 0;
-  }
+  const padded = seq.lastSequence.toString().padStart(4, "0");
 
-  yearlyCounters[year] += 1;
-
-  const padded = yearlyCounters[year].toString().padStart(4, "0");
-
-  return `TH-${year}-${padded}`;
+  return `TH-${today}-${padded}`;
 }

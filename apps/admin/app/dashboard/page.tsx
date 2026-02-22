@@ -12,7 +12,6 @@ function statusClass(status: string) {
   return "pending";
 }
 
-
 function toCsv(rows: Record<string, any>[]) {
   const esc = (v: any) => {
     const s = (v ?? "").toString().replace(/"/g, '""');
@@ -21,9 +20,7 @@ function toCsv(rows: Record<string, any>[]) {
   if (rows.length === 0) return "";
   const headers = Object.keys(rows[0]);
   const lines = [headers.map(esc).join(",")];
-  for (const r of rows) {
-    lines.push(headers.map((h) => esc(r[h])).join(","));
-  }
+  for (const r of rows) lines.push(headers.map((h) => esc(r[h])).join(","));
   return lines.join("\n");
 }
 
@@ -38,6 +35,7 @@ function downloadCsv(filename: string, csv: string) {
   a.remove();
   URL.revokeObjectURL(url);
 }
+
 export default function AdminDashboard() {
   const [orders, setOrders] = useState<Order[]>([]);
   const [openLogs, setOpenLogs] = useState<Record<string, boolean>>({});
@@ -56,22 +54,31 @@ export default function AdminDashboard() {
   async function load() {
     const r = await api("/admin/orders");
     const d = await r.json();
-    if (!r.ok) { setErr(d?.error || "LOAD_FAILED"); return; }
-
-async function loadLogs(orderId: string) {
-  if (logsCache[orderId]) return;
-  const r = await api(`/admin/orders/${orderId}/logs`);
-  const d = await r.json();
-  if (!r.ok) throw new Error(d?.error || "LOGS_FAILED");
-  setLogsCache((prev) => ({ ...prev, [orderId]: d.logs || [] }));
-}
+    if (!r.ok) {
+      setErr(d?.error || "LOAD_FAILED");
+      return;
+    }
     setOrders(d.orders || []);
   }
 
-  useEffect(() => { load().catch(() => setErr("LOAD_FAILED")); }, []);
+  // ✅ moved to component scope (was incorrectly nested inside load())
+  async function loadLogs(orderId: string) {
+    if (logsCache[orderId]) return;
+    const r = await api(`/admin/orders/${orderId}/logs`);
+    const d = await r.json();
+    if (!r.ok) throw new Error(d?.error || "LOGS_FAILED");
+    setLogsCache((prev) => ({ ...prev, [orderId]: d.logs || [] }));
+  }
+
+  useEffect(() => {
+    load().catch(() => setErr("LOAD_FAILED"));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   async function confirm(orderId: string, approve: boolean) {
-    setErr(null); setMsg(null);
+    setErr(null);
+    setMsg(null);
+
     const weightFinalKgStr = (document.getElementById(`w_${orderId}`) as HTMLInputElement | null)?.value;
     const priceFinalStr = (document.getElementById(`p_${orderId}`) as HTMLInputElement | null)?.value;
     const weightFinalKg = weightFinalKgStr ? Number(weightFinalKgStr) : undefined;
@@ -82,6 +89,7 @@ async function loadLogs(orderId: string) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ approve, weightFinalKg, priceFinal }),
     });
+
     const d = await res.json();
     if (!res.ok) return setErr(d?.error || "ACTION_FAILED");
     setMsg(approve ? "تم تأكيد الدفع." : "تم رفض الدفع.");
@@ -96,15 +104,29 @@ async function loadLogs(orderId: string) {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-2">
-        <h1 className="h1" style={{ fontSize: 24 }}>لوحة الإدارة</h1>
+        <h1 className="h1" style={{ fontSize: 24 }}>
+          لوحة الإدارة
+        </h1>
         <div className="flex gap-2 flex-wrap">
-        <a className="btn" href="/settings">الإعدادات</a>
-        <button className="btn" onClick={logout} type="button">تسجيل خروج</button>
-      </div>
+          <a className="btn" href="/settings">
+            الإعدادات
+          </a>
+          <button className="btn" onClick={logout} type="button">
+            تسجيل خروج
+          </button>
+        </div>
       </div>
 
-      {err && <div className="card" style={{ padding: 14, borderColor: "rgba(239,68,68,.35)" }}>خطأ: {err}</div>}
-      {msg && <div className="card" style={{ padding: 14, borderColor: "rgba(34,197,94,.35)" }}>{msg}</div>}
+      {err && (
+        <div className="card" style={{ padding: 14, borderColor: "rgba(239,68,68,.35)" }}>
+          خطأ: {err}
+        </div>
+      )}
+      {msg && (
+        <div className="card" style={{ padding: 14, borderColor: "rgba(34,197,94,.35)" }}>
+          {msg}
+        </div>
+      )}
 
       <div className="card">
         <div className="cardHead">
@@ -123,8 +145,12 @@ async function loadLogs(orderId: string) {
               <div key={o.id} className="card" style={{ padding: 14 }}>
                 <div className="flex justify-between flex-wrap gap-2 items-center">
                   <div>
-                    <div style={{ fontWeight: 950 }}>{o.orderNumber || o.id.slice(0,10)} — {o.direction}</div>
-                    <div className="small">{o.user?.fullName} — {o.user?.email}</div>
+                    <div style={{ fontWeight: 950 }}>
+                      {o.orderNumber || o.id.slice(0, 10)} — {o.direction}
+                    </div>
+                    <div className="small">
+                      {o.user?.fullName} — {o.user?.email}
+                    </div>
                   </div>
                   <span className={`statusPill ${statusClass(o.status)}`}>{o.status}</span>
                 </div>
@@ -138,7 +164,9 @@ async function loadLogs(orderId: string) {
                   </div>
                   <div>
                     <div className="small">سعر تقديري</div>
-                    <div style={{ fontWeight: 900 }}>{o.priceEstimated} {o.currency}</div>
+                    <div style={{ fontWeight: 900 }}>
+                      {o.priceEstimated} {o.currency}
+                    </div>
                   </div>
                   <div>
                     <div className="small">وزن نهائي</div>
@@ -151,32 +179,43 @@ async function loadLogs(orderId: string) {
                 </div>
 
                 <div style={{ marginTop: 10 }} className="flex gap-2 flex-wrap items-center">
-<button
-  className="btn"
-  type="button"
-  onClick={async () => {
-    const next = !openLogs[o.id];
-    setOpenLogs((p) => ({ ...p, [o.id]: next }));
-    if (next) {
-      try { await loadLogs(o.id); } catch (e: any) { setErr(e?.message || "LOGS_FAILED"); }
-    }
-  }}
->
-  سجل الحالة
-</button>
+                  <button
+                    className="btn"
+                    type="button"
+                    onClick={async () => {
+                      const next = !openLogs[o.id];
+                      setOpenLogs((p) => ({ ...p, [o.id]: next }));
+                      if (next) {
+                        try {
+                          await loadLogs(o.id);
+                        } catch (e: any) {
+                          setErr(e?.message || "LOGS_FAILED");
+                        }
+                      }
+                    }}
+                  >
+                    سجل الحالة
+                  </button>
+
                   {receiptUrl ? (
-                    <a className="btn" href={receiptUrl} target="_blank" rel="noreferrer">عرض الإيصال</a>
+                    <a className="btn" href={receiptUrl} target="_blank" rel="noreferrer">
+                      عرض الإيصال
+                    </a>
                   ) : (
                     <span className="small">لا يوجد إيصال مرفوع</span>
                   )}
 
-                  <button className="btn btnPrimary" onClick={() => confirm(o.id, true)} type="button">تأكيد</button>
-                  <button className="btn" onClick={() => confirm(o.id, false)} type="button">رفض</button>
-  </div>
+                  <button className="btn btnPrimary" onClick={() => confirm(o.id, true)} type="button">
+                    تأكيد
+                  </button>
+                  <button className="btn" onClick={() => confirm(o.id, false)} type="button">
+                    رفض
+                  </button>
+                </div>
 
-  {openLogs[o.id] && (
-    <div style={{ marginTop: 10 }} className="card">
-      <div className="cardHead">
+                {openLogs[o.id] && (
+                  <div style={{ marginTop: 10 }} className="card">
+                    <div className="cardHead">
                       <div className="cardTitle">سجل تغيّر الحالة</div>
                       <div className="flex gap-2 flex-wrap items-center">
                         <select
@@ -218,23 +257,32 @@ async function loadLogs(orderId: string) {
                         <div className="badge">{(logsCache[o.id] || []).length}</div>
                       </div>
                     </div>
-      <div className="cardBody space-y-2">
-        {(logsCache[o.id] || []).length === 0 && <div className="small">لا يوجد سجل.</div>}
-        {(logsCache[o.id] || []).filter((l: any) => (logFilter[o.id] || "ALL") === "ALL" ? true : l.toStatus === (logFilter[o.id] || "ALL")).map((l: any) => (
-          <div key={l.id} className="small" style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            <span className="badge">{l.fromStatus || "—"} → {l.toStatus}</span>
-            <span>{new Date(l.createdAt).toLocaleString()}</span>
-            <span className="small" style={{ color: "var(--muted)" }}>
-              {l.actor?.fullName ? `بواسطة: ${l.actor.fullName}` : ""}
-            </span>
-            {l.note && <span className="small" style={{ color: "var(--muted)" }}>({l.note})</span>}
-          </div>
-        ))}
-      </div>
-    </div>
-  )}
-</div>
 
+                    <div className="cardBody space-y-2">
+                      {(logsCache[o.id] || []).length === 0 && <div className="small">لا يوجد سجل.</div>}
+
+                      {(logsCache[o.id] || [])
+                        .filter((l: any) => ((logFilter[o.id] || "ALL") === "ALL" ? true : l.toStatus === (logFilter[o.id] || "ALL")))
+                        .map((l: any) => (
+                          <div key={l.id} className="small" style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                            <span className="badge">
+                              {l.fromStatus || "—"} → {l.toStatus}
+                            </span>
+                            <span>{new Date(l.createdAt).toLocaleString()}</span>
+                            <span className="small" style={{ color: "var(--muted)" }}>
+                              {l.actor?.fullName ? `بواسطة: ${l.actor.fullName}` : ""}
+                            </span>
+                            {l.note && (
+                              <span className="small" style={{ color: "var(--muted)" }}>
+                                ({l.note})
+                              </span>
+                            )}
+                          </div>
+                        ))}
+                    </div>
+                  </div>
+                )}
+              </div>
             );
           })}
         </div>

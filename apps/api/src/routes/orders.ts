@@ -2,20 +2,16 @@ import { Router } from "express";
 import multer from "multer";
 import path from "path";
 import fs from "fs";
-import { PrismaClient } from "@prisma/client";
-import { requireAuth } from "../middleware/auth.js"; // إضافة .js للالتزام بنظام ESM
-import { logger } from "../logger.js"; // استخدام نظام التسجيل الجديد
 
-const prisma = new PrismaClient();
+import { prisma } from "../lib/prisma.js";
+import { requireAuth } from "../middleware/auth.js";
+import { logger } from "../logger.js";
+import { nextOrderNumber } from "../utils/orderNumber.js";
+
 export const ordersRouter = Router();
 
-// تعريف أنواع الشحن المتوافقة مع قاعدة البيانات
-const VALID_SHIPPING_METHODS = ["AIR", "SEA", "EXPRESS"] as const;
-
-/**
- * إعداد التخزين للإيصالات المرفوعة
- */
-const UPLOAD_DIR = path.join(process.cwd(), "uploads");
+// Upload receipts
+const UPLOAD_DIR = path.resolve(process.env.UPLOAD_DIR || "uploads");
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
 const storage = multer.diskStorage({
@@ -26,40 +22,15 @@ const storage = multer.diskStorage({
   },
 });
 const upload = multer({ storage });
+const orderNumber = await nextOrderNumber(direction as any);
 
-function toFloat(v: unknown): number | null {
+function toNumber(v: unknown): number | null {
   if (v === null || v === undefined) return null;
   const n = typeof v === "number" ? v : Number(String(v).trim());
   return Number.isFinite(n) ? n : null;
 }
 
-/**
- * توليد رقم الطلب التالي (تلقائي)
- */
-async function nextOrderNumber(): Promise<string> {
-  const ymd = new Date().toISOString().slice(0, 10).replace(/-/g, "");
-  const prefix = `TH-${ymd}-`;
-
-  const last = await prisma.order.findFirst({
-    where: { orderNumber: { startsWith: prefix } },
-    orderBy: { createdAt: "desc" },
-    select: { orderNumber: true },
-  });
-
-  let next = 1;
-  if (last?.orderNumber) {
-    const parts = last.orderNumber.split("-");
-    const tail = parts[parts.length - 1] || "0";
-    const prev = parseInt(tail, 10);
-    if (Number.isFinite(prev)) next = prev + 1;
-  }
-
-  return `${prefix}${String(next).padStart(4, "0")}`;
-}
-
-/**
- * GET /orders
- */
+// GET /orders
 ordersRouter.get("/", requireAuth, async (req, res) => {
   try {
     const userId = req.user!.id;
@@ -69,20 +40,20 @@ ordersRouter.get("/", requireAuth, async (req, res) => {
       where: isAdmin ? {} : { userId },
       orderBy: { createdAt: "desc" },
       include: {
+        senderAddress: true,
+        receiverAddress: true,
         payments: { orderBy: { createdAt: "desc" } },
       },
     });
 
-    res.json(orders);
+    res.json({ orders });
   } catch (e: any) {
-    logger.error(e, "فشل جلب الطلبات");
+    logger.error(e, "LOAD_ORDERS_FAILED");
     res.status(500).json({ error: "INTERNAL_ERROR" });
   }
 });
 
-/**
- * GET /orders/:id
- */
+// GET /orders/:id
 ordersRouter.get("/:id", requireAuth, async (req, res) => {
   try {
     const id = String(req.params.id);
@@ -92,87 +63,111 @@ ordersRouter.get("/:id", requireAuth, async (req, res) => {
     const order = await prisma.order.findUnique({
       where: { id },
       include: {
+        senderAddress: true,
+        receiverAddress: true,
         payments: { include: { receipts: true }, orderBy: { createdAt: "desc" } },
       },
     });
 
-    if (!order) return res.status(404).json({ error: "Order not found" });
-    if (!isAdmin && order.userId !== userId) return res.status(403).json({ error: "Forbidden" });
+    if (!order) return res.status(404).json({ error: "ORDER_NOT_FOUND" });
+    if (!isAdmin && order.userId !== userId) return res.status(403).json({ error: "FORBIDDEN" });
 
-    res.json(order);
+    res.json({ order });
   } catch (e: any) {
-    logger.error(e, `فشل جلب الطلب رقم: ${req.params.id}`);
+    logger.error(e, "LOAD_ORDER_FAILED");
     res.status(500).json({ error: "INTERNAL_ERROR" });
   }
 });
 
-/**
- * POST /orders
- * إنشاء طلب جديد
- */
+// POST /orders
 ordersRouter.post("/", requireAuth, async (req, res) => {
   try {
     const userId = req.user!.id;
 
     const direction = String(req.body?.direction || "").trim();
-    const shippingMethod = String(req.body?.shippingMethod || "").toUpperCase();
-    const purchasePlatform = String(req.body?.purchasePlatform || "").toUpperCase();
+    const contents = String(req.body?.contents || "").trim();
 
-    const weightKg = toFloat(req.body?.weightKg);
-    const declaredValue = toFloat(req.body?.declaredValue);
+    // UI fields (غير موجودة كسكيمـا) نخزنها داخل purchaseDetails
+    const shippingMethod = req.body?.shippingMethod ? String(req.body.shippingMethod).toUpperCase() : undefined;
+    const purchasePlatform = req.body?.purchasePlatform ? String(req.body.purchasePlatform).toUpperCase() : undefined;
+
+    const weightDeclaredKg = toNumber(req.body?.weightDeclaredKg);
+    const declaredValueUsd = toNumber(req.body?.declaredValueUsd);
     const insuranceRequested = Boolean(req.body?.insuranceRequested);
-    const insuranceValue = toFloat(req.body?.insuranceValue);
-    const notes = typeof req.body?.notes === "string" ? req.body.notes : null;
+    const insuranceValueUsd = toNumber(req.body?.insuranceValueUsd);
 
-    // التحقق من الحقول الإجبارية
-    if (!direction || !shippingMethod || !purchasePlatform) {
-      return res.status(400).json({ error: "Missing required fields" });
+    const sender = req.body?.senderAddress;
+    const receiver = req.body?.receiverAddress;
+
+    if (!direction) return res.status(400).json({ error: "DIRECTION_REQUIRED" });
+    if (!contents) return res.status(400).json({ error: "CONTENTS_REQUIRED" });
+    if (weightDeclaredKg === null || weightDeclaredKg <= 0) return res.status(400).json({ error: "WEIGHT_REQUIRED" });
+
+    if (!sender?.fullName || !sender?.phone || !sender?.country || !sender?.city || !sender?.addressLine1) {
+      return res.status(400).json({ error: "SENDER_ADDRESS_INVALID" });
+    }
+    if (!receiver?.fullName || !receiver?.phone || !receiver?.country || !receiver?.city || !receiver?.addressLine1) {
+      return res.status(400).json({ error: "RECEIVER_ADDRESS_INVALID" });
     }
 
-    if (weightKg === null || weightKg <= 0) {
-      return res.status(400).json({ error: "weightKg must be a positive number" });
-    }
+    const settings = await prisma.setting.findFirst();
+    const shipJodPerKg = settings?.shipJodPerKg_JO_TO_DZ ?? 4.5;
+    const shipDzdPerKg = settings?.shipDzdPerKg_DZ_TO_JO ?? 1100;
 
-    // التحقق من صحة الاتجاه وطريقة الشحن
-    const allowedDirections = ["JO_TO_DZ", "DZ_TO_JO"];
-    if (!allowedDirections.includes(direction)) {
-      return res.status(400).json({ error: "Invalid direction" });
-    }
+    const currency = direction === "DZ_TO_JO" ? "DZD" : "JOD";
+    const unit = direction === "DZ_TO_JO" ? shipDzdPerKg : shipJodPerKg;
+    const priceEstimated = Math.max(0, Math.round(weightDeclaredKg * unit * 100) / 100);
 
-    if (!VALID_SHIPPING_METHODS.includes(shippingMethod as any)) {
-      return res.status(400).json({ error: "Invalid shippingMethod" });
-    }
+    const orderNumber = nextOrderNumber();
 
-    const orderNumber = await nextOrderNumber();
-
-    const order = await prisma.order.create({
+    const created = await prisma.order.create({
       data: {
         userId,
         orderNumber,
-        status: "NEW",
         direction: direction as any,
-        shippingMethod: shippingMethod as any,
-        purchasePlatform,
-        weightKg,
-        declaredValue,
+        status: "PENDING_REVIEW",
+        contents,
+        weightDeclaredKg,
+        currency,
+        priceEstimated,
+        declaredValueUsd: declaredValueUsd ?? null,
         insuranceRequested,
-        insuranceValue: insuranceValue ?? null,
-        notes,
+        insuranceValueUsd: insuranceRequested ? (insuranceValueUsd ?? null) : null,
+        assistedPurchase: Boolean(purchasePlatform),
+        purchaseDetails: JSON.stringify({ shippingMethod, purchasePlatform }),
+        senderAddress: {
+          create: {
+            name: String(sender.fullName),
+            phone: String(sender.phone),
+            country: String(sender.country),
+            city: String(sender.city),
+            addressLine1: String(sender.addressLine1),
+            addressLine2: sender.addressLine2 ? String(sender.addressLine2) : null,
+          },
+        },
+        receiverAddress: {
+          create: {
+            name: String(receiver.fullName),
+            phone: String(receiver.phone),
+            country: String(receiver.country),
+            city: String(receiver.city),
+            addressLine1: String(receiver.addressLine1),
+            addressLine2: receiver.addressLine2 ? String(receiver.addressLine2) : null,
+          },
+        },
       },
+      include: { senderAddress: true, receiverAddress: true },
     });
 
-    logger.info({ orderId: order.id, orderNumber }, "تم إنشاء طلب جديد بنجاح");
-    res.status(201).json(order);
+    logger.info({ orderId: created.id, orderNumber }, "ORDER_CREATED");
+    res.status(201).json({ order: created });
   } catch (e: any) {
-    logger.error(e, "فشل إنشاء الطلب");
+    logger.error({ err: e, body: req.body }, "CREATE_ORDER_FAILED");
     res.status(500).json({ error: "INTERNAL_ERROR" });
   }
 });
 
-/**
- * POST /orders/:id/receipt
- * رفع إيصال الدفع
- */
+// POST /orders/:id/receipt
 ordersRouter.post("/:id/receipt", requireAuth, upload.single("file"), async (req, res) => {
   try {
     const id = String(req.params.id);
@@ -180,16 +175,16 @@ ordersRouter.post("/:id/receipt", requireAuth, upload.single("file"), async (req
     const isAdmin = req.user!.role === "ADMIN";
 
     const order = await prisma.order.findUnique({ where: { id } });
-    if (!order) return res.status(404).json({ error: "Order not found" });
-    if (!isAdmin && order.userId !== userId) return res.status(403).json({ error: "Forbidden" });
+    if (!order) return res.status(404).json({ error: "ORDER_NOT_FOUND" });
+    if (!isAdmin && order.userId !== userId) return res.status(403).json({ error: "FORBIDDEN" });
 
-    const amount = toFloat(req.body?.amount);
-    if (amount === null || amount <= 0) return res.status(400).json({ error: "amount must be a positive number" });
+    const amount = toNumber(req.body?.amount);
+    if (amount === null || amount <= 0) return res.status(400).json({ error: "AMOUNT_INVALID" });
 
     const file = req.file;
-    if (!file) return res.status(400).json({ error: "Missing receipt file" });
+    if (!file) return res.status(400).json({ error: "RECEIPT_REQUIRED" });
 
-    const publicUrl = `/uploads/${file.filename}`;
+    const receiptUrl = `/uploads/${file.filename}`;
     const reference = typeof req.body?.reference === "string" ? req.body.reference : null;
 
     const payment = await prisma.payment.create({
@@ -198,19 +193,45 @@ ordersRouter.post("/:id/receipt", requireAuth, upload.single("file"), async (req
         method: "MANUAL",
         amount,
         status: "UNDER_REVIEW",
-        receiptUrl: publicUrl,
+        receiptUrl,
         reference: reference ?? undefined,
-        receipts: {
-          create: [{ url: publicUrl }],
-        },
+        receipts: { create: [{ url: receiptUrl }] },
       },
       include: { receipts: true },
     });
 
-    logger.info({ orderId: id, paymentId: payment.id }, "تم رفع إيصال دفع جديد");
-    res.status(201).json(payment);
+    await prisma.order.update({
+      where: { id },
+      data: { status: "PAYMENT_UNDER_REVIEW" },
+    });
+
+    logger.info({ orderId: id, paymentId: payment.id }, "RECEIPT_UPLOADED");
+    res.status(201).json({ payment });
   } catch (e: any) {
-    logger.error(e, "فشل رفع إيصال الدفع");
+    logger.error(e, "UPLOAD_RECEIPT_FAILED");
     res.status(500).json({ error: "INTERNAL_ERROR" });
   }
+});
+const senderAddress = await prisma.address.create({
+  data: {
+    userId,
+    country: sender.country,
+    city: sender.city,
+    line1: sender.line1,
+    line2: sender.line2 ?? null,
+    phone: sender.phone ?? null,
+    label: "SENDER",
+  },
+});
+
+const receiverAddress = await prisma.address.create({
+  data: {
+    userId,
+    country: receiver.country,
+    city: receiver.city,
+    line1: receiver.line1,
+    line2: receiver.line2 ?? null,
+    phone: receiver.phone ?? null,
+    label: "RECEIVER",
+  },
 });

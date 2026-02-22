@@ -1,20 +1,16 @@
-FROM node:20-alpine AS base
-WORKDIR /app
+FROM node:20-slim AS base
+ENV PNPM_HOME="/pnpm"
+ENV PATH="$PNPM_HOME:$PATH"
+RUN corepack enable
 
-# Copy monorepo root files needed for pnpm
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
-COPY apps/api/package.json apps/api/package.json
-COPY packages/shared/package.json packages/shared/package.json
-
-RUN corepack enable && corepack prepare pnpm@10.30.0 --activate
-RUN pnpm install --frozen-lockfile
-
-COPY apps/api apps/api
-COPY packages/shared packages/shared
-
-WORKDIR /app/apps/api
-RUN pnpm run prisma:generate
+FROM base AS build
+COPY . /usr/src/app
+WORKDIR /usr/src/app
+RUN --mount=type=cache,id=pnpm,target=/pnpm/store pnpm install --frozen-lockfile
 RUN pnpm run build
 
+FROM base
+COPY --from=build /usr/src/app /usr/src/app
+WORKDIR /usr/src/app
 EXPOSE 4000
-CMD ["pnpm","run","start"]
+CMD [ "pnpm", "start" ]

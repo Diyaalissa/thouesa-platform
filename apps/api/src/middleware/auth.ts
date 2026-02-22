@@ -1,46 +1,36 @@
-import type { RequestHandler, Request } from "express";
-import type { UserRole } from "@prisma/client";
+import { Request, Response, NextFunction } from "express";
 import { verifyToken } from "../lib/jwt.js";
 
-export type TokenUser = {
-  id: string;
-  email?: string;
-  role?: UserRole;
-};
-
-export type AuthRequest = Request & { user?: TokenUser };
-
-function getBearer(req: Request): string | null {
-  const h = req.headers.authorization;
-  if (!h) return null;
-  const m = /^Bearer\s+(.+)$/i.exec(h);
-  return m?.[1] || null;
+export interface AuthRequest extends Request {
+  user?: { id: string; role: string };
 }
 
-export const requireAuth: RequestHandler = (req, res, next) => {
+export const requireAuth = (req: AuthRequest, res: Response, next: NextFunction) => {
+  const token = req.headers.authorization?.split(" ")[1];
+  if (!token) return res.status(401).json({ success: false, error: "UNAUTHORIZED" });
+
   try {
-    const token = getBearer(req);
-    if (!token) return res.status(401).json({ error: "UNAUTHENTICATED" });
-
-    const payload = verifyToken(token);
-
-    const id = (payload.userId || payload.id) as string | undefined;
-    if (!id) return res.status(401).json({ error: "UNAUTHENTICATED" });
-
-    req.user = {
-      id,
-      email: payload.email,
-      role: payload.role,
-    };
-
-    return next();
-  } catch {
-    return res.status(401).json({ error: "UNAUTHENTICATED" });
+    const decoded = verifyToken(token) as { id: string; role: string };
+    req.user = decoded;
+    next();
+  } catch (err) {
+    res.status(401).json({ success: false, error: "INVALID_TOKEN" });
   }
 };
 
-export const requireAdmin: RequestHandler = (req, res, next) => {
-  if (!req.user) return res.status(401).json({ error: "UNAUTHENTICATED" });
-  if (req.user.role !== "ADMIN") return res.status(403).json({ error: "FORBIDDEN" });
-  return next();
+// السماح للمسؤول فقط
+export const requireAdmin = (req: AuthRequest, res: Response, next: NextFunction) => {
+  if (req.user?.role !== "ADMIN") {
+    return res.status(403).json({ success: false, error: "FORBIDDEN_ADMIN_ONLY" });
+  }
+  next();
 };
+
+// السماح للمسؤول أو موظف العمليات (Phase 4)
+export const requireStaff = (req: AuthRequest, res: Response, next: NextFunction) => {
+    const staffRoles = ["ADMIN", "OPERATIONS", "DRIVER"];
+    if (!req.user || !staffRoles.includes(req.user.role)) {
+      return res.status(403).json({ success: false, error: "FORBIDDEN_STAFF_ONLY" });
+    }
+    next();
+  };

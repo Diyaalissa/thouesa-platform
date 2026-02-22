@@ -4,14 +4,14 @@ import { requireAuth, requireAdmin } from "../middleware/auth.js";
 import { z } from "zod";
 import { OrderStatus } from "@prisma/client";
 import { logger } from "../logger.js";
+import crypto from "crypto";
 
 export const adminRouter = Router();
 
-// تطبيق الحماية الشاملة: لا يدخل هنا إلا مسجل دخول وصلاحيته Admin
 adminRouter.use(requireAuth, requireAdmin);
 
 /**
- * 1. إحصائيات لوحة التحكم (Dashboard Summary)
+ * 1. إحصائيات لوحة التحكم
  */
 adminRouter.get("/dashboard/summary", async (_req, res, next) => {
   try {
@@ -23,189 +23,123 @@ adminRouter.get("/dashboard/summary", async (_req, res, next) => {
         where: { status: { in: ["CONFIRMED", "SHIPPED", "ARRIVED", "DELIVERED"] } }
       })
     ]);
-
-    res.json({
-      success: true,
-      data: {
-        totalOrders,
-        pendingOrders,
-        totalRevenue: revenue._sum.priceEstimated || 0,
-        currency: "Mixed (JOD/DZD)"
-      }
-    });
-  } catch (error) {
-    next(error);
-  }
+    res.json({ success: true, data: { totalOrders, pendingOrders, totalRevenue: revenue._sum.priceEstimated || 0 } });
+  } catch (error) { next(error); }
 });
 
 /**
- * 2. جلب قائمة الطلبات مع فلاتر الحالة
+ * 2. جلب الطلبات بالفلاتر
  */
 adminRouter.get("/orders", async (req, res, next) => {
   try {
-    const { status, limit = "20", offset = "0" } = req.query;
-
+    const { status, trackingNumber } = req.query;
     const orders = await prisma.order.findMany({
-      where: status ? { status: status as OrderStatus } : {},
-      take: parseInt(limit as string),
-      skip: parseInt(offset as string),
+      where: {
+        ...(status ? { status: status as OrderStatus } : {}),
+        ...(trackingNumber ? { trackingNumber: trackingNumber as string } : {})
+      },
       orderBy: { createdAt: "desc" },
-      include: {
-        user: { select: { fullName: true, email: true, phoneNumber: true } },
-        payments: { orderBy: { createdAt: "desc" }, take: 1 },
-        senderAddress: true,
-        receiverAddress: true
-      }
+      include: { user: { select: { fullName: true } }, senderAddress: true, receiverAddress: true }
     });
-
     res.json({ success: true, data: orders });
-  } catch (error) {
-    next(error);
-  }
+  } catch (error) { next(error); }
 });
 
 /**
- * 3. تحديث حالة الطلب مع فرض مصفوفة الانتقال (Status Transition Matrix)
+ * 3. تفعيل الشحن وتوليد رقم التتبع (Phase 4 New)
  */
-const updateStatusSchema = z.object({
-  status: z.nativeEnum(OrderStatus),
+const shipOrderSchema = z.object({
+  trackingNumber: z.string().optional(), // إذا لم يرسله المدير، سنقوم بتوليده آلياً
   note: z.string().optional()
 });
 
-adminRouter.patch("/orders/:id/status", async (req: any, res, next) => {
+adminRouter.post("/orders/:id/ship", async (req: any, res, next) => {
   try {
-    const parsed = updateStatusSchema.safeParse(req.body);
+    const parsed = shipOrderSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ success: false, error: "VALIDATION_ERROR" });
 
     const orderId = req.params.id;
-    const newStatus = parsed.data.status;
-    const note = parsed.data.note || `تم تحديث الحالة إلى ${newStatus}`;
+    // توليد رقم تتبع فريد إذا لم يتوفر (مثال: TH-TRACK-XXXXX)
+    const trackingNumber = parsed.data.trackingNumber || `TRK-${crypto.randomBytes(4).toString("hex").toUpperCase()}`;
 
     const result = await prisma.$transaction(async (tx) => {
       const order = await tx.order.findUnique({ where: { id: orderId } });
-      if (!order) throw new Error("ORDER_NOT_FOUND");
-
-      // مصفوفة الحالات اللوجستية المنطقية
-      const allowedTransitions: Record<OrderStatus, OrderStatus[]> = {
-        PENDING: ["CONFIRMED", "REJECTED"],
-        CONFIRMED: ["SHIPPED", "CANCELLED"],
-        SHIPPED: ["ARRIVED"],
-        ARRIVED: ["DELIVERED", "RETURNED"],
-        DELIVERED: [],
-        REJECTED: ["PENDING"],
-        CANCELLED: [],
-        RETURNED: ["SHIPPED"]
-      };
-
-      if (!allowedTransitions[order.status].includes(newStatus)) {
-        const error: any = new Error(`لا يمكن الانتقال من ${order.status} إلى ${newStatus}`);
-        error.status = 400;
-        throw error;
+      if (!order || order.status !== "CONFIRMED") {
+        throw new Error("ORDER_MUST_BE_CONFIRMED_BEFORE_SHIPPING");
       }
 
-      const updatedOrder = await tx.order.update({
+      const updated = await tx.order.update({
         where: { id: orderId },
-        data: { status: newStatus }
+        data: { 
+          status: "SHIPPED",
+          trackingNumber: trackingNumber
+        }
       });
 
       await tx.orderStatusLog.create({
         data: {
           orderId,
-          status: newStatus,
+          status: "SHIPPED",
           actorId: req.user.id,
-          note
+          note: parsed.data.note || `Order shipped with tracking: ${trackingNumber}`
         }
       });
 
-      return updatedOrder;
+      return updated;
     });
 
     res.json({ success: true, data: result });
-  } catch (error) {
-    next(error);
-  }
+  } catch (error) { next(error); }
 });
 
 /**
- * 4. مراجعة وتأكيد الدفع (Review Payment)
+ * 4. تحديث الحالة العادية (مصفوفة الانتقال)
  */
-const paymentReviewSchema = z.object({
-  approve: z.boolean(),
-  weightFinalKg: z.number().positive().optional(),
-  priceFinal: z.number().positive().optional(),
-  note: z.string().optional()
-});
-
-adminRouter.post("/orders/:id/review-payment", async (req: any, res, next) => {
+adminRouter.patch("/orders/:id/status", async (req: any, res, next) => {
   try {
-    const parsed = paymentReviewSchema.safeParse(req.body);
-    if (!parsed.success) return res.status(400).json({ success: false, error: "VALIDATION_ERROR" });
+    const { status, note } = req.body;
+    const orderId = req.params.id;
 
     const result = await prisma.$transaction(async (tx) => {
-      const order = await tx.order.findUnique({ 
-        where: { id: req.params.id },
-        include: { payments: true } 
-      });
+      const order = await tx.order.findUnique({ where: { id: orderId } });
+      if (!order) throw new Error("ORDER_NOT_FOUND");
 
-      if (!order || order.payments.length === 0) throw new Error("ORDER_OR_PAYMENT_NOT_FOUND");
-      
-      const payment = order.payments[0];
+      const allowed: Record<string, string[]> = {
+        PENDING: ["CONFIRMED", "REJECTED"],
+        CONFIRMED: ["SHIPPED", "CANCELLED"],
+        SHIPPED: ["ARRIVED"],
+        ARRIVED: ["DELIVERED", "RETURNED"],
+        DELIVERED: [], REJECTED: [], CANCELLED: []
+      };
 
-      if (parsed.data.approve) {
-        await tx.payment.update({ 
-          where: { id: payment.id }, 
-          data: { status: "CONFIRMED" } 
-        });
-
-        const updated = await tx.order.update({
-          where: { id: order.id },
-          data: { 
-            status: "CONFIRMED",
-            weightFinalKg: parsed.data.weightFinalKg ?? order.weightDeclaredKg,
-            priceFinal: parsed.data.priceFinal ?? order.priceEstimated
-          }
-        });
-
-        await tx.orderStatusLog.create({
-          data: {
-            orderId: order.id,
-            status: "CONFIRMED",
-            actorId: req.user.id,
-            note: parsed.data.note || "تم تأكيد الدفع واعتماد الطلب"
-          }
-        });
-
-        return updated;
-      } else {
-        await tx.payment.update({ where: { id: payment.id }, data: { status: "REJECTED" } });
-        const rejected = await tx.order.update({ where: { id: order.id }, data: { status: "REJECTED" } });
-        
-        await tx.orderStatusLog.create({
-          data: { orderId: order.id, status: "REJECTED", actorId: req.user.id, note: parsed.data.note || "تم رفض الدفع" }
-        });
-
-        return rejected;
+      if (!allowed[order.status]?.includes(status)) {
+        throw new Error(`Invalid transition from ${order.status} to ${status}`);
       }
+
+      const updated = await tx.order.update({ where: { id: orderId }, data: { status: status as OrderStatus } });
+      await tx.orderStatusLog.create({ data: { orderId, status: status as OrderStatus, actorId: req.user.id, note } });
+      return updated;
     });
 
     res.json({ success: true, data: result });
-  } catch (error) {
-    next(error);
-  }
+  } catch (error) { next(error); }
 });
 
 /**
- * 5. جلب سجل الحركات للطلب
+ * 5. مراجعة الدفع (Review Payment)
  */
-adminRouter.get("/orders/:id/logs", async (req, res, next) => {
-  try {
-    const logs = await prisma.orderStatusLog.findMany({
-      where: { orderId: req.params.id },
-      orderBy: { createdAt: "desc" },
-      include: { actor: { select: { fullName: true, role: true } } }
-    });
-    res.json({ success: true, data: logs });
-  } catch (error) {
-    next(error);
-  }
-});
+adminRouter.post("/orders/:id/review-payment", async (req: any, res, next) => {
+    try {
+      const { approve, note } = req.body;
+      const result = await prisma.$transaction(async (tx) => {
+        const order = await tx.order.findUnique({ where: { id: req.params.id }, include: { payments: true } });
+        if (!order || !order.payments.length) throw new Error("PAYMENT_NOT_FOUND");
+        
+        await tx.payment.update({ where: { id: order.payments[0].id }, data: { status: approve ? "CONFIRMED" : "REJECTED" } });
+        const updated = await tx.order.update({ where: { id: order.id }, data: { status: approve ? "CONFIRMED" : "REJECTED" } });
+        await tx.orderStatusLog.create({ data: { orderId: order.id, status: updated.status, actorId: req.user.id, note } });
+        return updated;
+      });
+      res.json({ success: true, data: result });
+    } catch (error) { next(error); }
+  });

@@ -1,36 +1,33 @@
-import { Request, Response, NextFunction } from "express";
+import type { Request, Response, NextFunction } from "express";
 import { verifyToken } from "../lib/jwt.js";
+import type { UserRole } from "@prisma/client";
 
-export interface AuthRequest extends Request {
-  user?: { id: string; role: string };
+export type AuthRequest = Request & {
+  user: { id: string; email?: string; role: UserRole };
+};
+
+function getBearer(req: Request): string | null {
+  const h = req.headers.authorization;
+  if (!h) return null;
+  const m = h.match(/^Bearer\s+(.+)$/i);
+  return m ? m[1] : null;
 }
 
-export const requireAuth = (req: AuthRequest, res: Response, next: NextFunction) => {
-  const token = req.headers.authorization?.split(" ")[1];
-  if (!token) return res.status(401).json({ success: false, error: "UNAUTHORIZED" });
-
+export function requireAuth(req: Request, res: Response, next: NextFunction) {
   try {
-    const decoded = verifyToken(token) as { id: string; role: string };
-    req.user = decoded;
-    next();
-  } catch (err) {
-    res.status(401).json({ success: false, error: "INVALID_TOKEN" });
-  }
-};
+    const token = getBearer(req);
+    if (!token) return res.status(401).json({ error: "UNAUTHORIZED" });
 
-// السماح للمسؤول فقط
-export const requireAdmin = (req: AuthRequest, res: Response, next: NextFunction) => {
-  if (req.user?.role !== "ADMIN") {
-    return res.status(403).json({ success: false, error: "FORBIDDEN_ADMIN_ONLY" });
+    const payload = verifyToken(token);
+    req.user = { id: payload.id, email: payload.email, role: payload.role };
+    next();
+  } catch {
+    return res.status(401).json({ error: "UNAUTHORIZED" });
   }
+}
+
+export function requireAdmin(req: Request, res: Response, next: NextFunction) {
+  if (!req.user) return res.status(401).json({ error: "UNAUTHORIZED" });
+  if (req.user.role !== "ADMIN") return res.status(403).json({ error: "FORBIDDEN" });
   next();
-};
-
-// السماح للمسؤول أو موظف العمليات (Phase 4)
-export const requireStaff = (req: AuthRequest, res: Response, next: NextFunction) => {
-    const staffRoles = ["ADMIN", "OPERATIONS", "DRIVER"];
-    if (!req.user || !staffRoles.includes(req.user.role)) {
-      return res.status(403).json({ success: false, error: "FORBIDDEN_STAFF_ONLY" });
-    }
-    next();
-  };
+}

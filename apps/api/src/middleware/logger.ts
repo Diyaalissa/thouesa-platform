@@ -1,14 +1,14 @@
-import pinoHttpImport from "pino-http";
-import type { IncomingMessage, ServerResponse } from "http";
+import type { Request, Response, NextFunction } from "express";
+import { logger } from "../logger.js";
 
-// pino-http CommonJS: أحياناً يأتي تحت default مع ESM
-const pinoHttp = ((pinoHttpImport as any).default ?? pinoHttpImport) as any;
-
-export const httpLogger = pinoHttp({
-  redact: ["req.headers.authorization"],
-  customLogLevel: (_req: IncomingMessage, res: ServerResponse, err?: Error) => {
-    if (err || res.statusCode >= 500) return "error";
-    if (res.statusCode >= 400) return "warn";
-    return "info";
-  },
-});
+export function requestLogger(req: Request, res: Response, next: NextFunction) {
+  const start = Date.now();
+  res.on("finish", () => {
+    const ms = Date.now() - start;
+    logger.info(
+      { method: req.method, path: req.originalUrl, status: res.statusCode, ms },
+      "http"
+    );
+  });
+  next();
+}

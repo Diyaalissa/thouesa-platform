@@ -1,3 +1,4 @@
+import "express";
 import type { UserRole } from "@prisma/client";
 
 declare global {
@@ -6,7 +7,7 @@ declare global {
       user?: {
         id: string;
         email?: string;
-        role?: UserRole;
+        role: UserRole;
       };
     }
   }

@@ -1,17 +1,18 @@
 import { Router } from "express";
 import bcrypt from "bcryptjs";
 import crypto from "crypto";
-import { sendOtpEmail } from "../utils/mailer.js"; // تأكد من وجود .js
-import { otpLimiter } from "../middleware/security.js";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { signToken } from "../lib/jwt.js";
-import { requireAuth, AuthRequest } from "../middleware/auth.js";
+import { requireAuth } from "../middleware/auth.js";
+import type { AuthRequest } from "../middleware/auth.js";
+import { otpLimiter } from "../middleware/security.js";
+import { sendOtpEmail } from "../utils/mailer.js";
 import { logger } from "../logger.js";
 
 export const authRouter = Router();
 
-// --- 1. شروط التحقق (Schemas) ---
+/* ===================== Schemas ===================== */
 
 const registerSchema = z.object({
   fullName: z.string().min(2, "الاسم الكامل قصير جداً"),
@@ -28,7 +29,6 @@ const loginSchema = z.object({
 const requestCodeSchema = z.object({
   email: z.string().email("البريد الإلكتروني غير صحيح"),
   fullName: z.string().optional(),
-  // جعلنا الكود يقبل نصوصاً مرنة لاستيعاب ما يرسله المتصفح مثل "الجزائر (+213)"
   phoneCountryCode: z.string().optional(),
   phoneNumber: z.string().min(6, "رقم الهاتف قصير جداً").max(20).optional(),
 });
@@ -38,11 +38,9 @@ const verifyCodeSchema = z.object({
   code: z.string().min(4, "الكود غير مكتمل"),
 });
 
-// --- 2. المسارات (Routes) ---
+/* ===================== Routes ===================== */
 
-/**
- * تسجيل مستخدم جديد بالطريقة التقليدية
- */
+// Register (password)
 authRouter.post("/register", async (req, res) => {
   const parsed = registerSchema.safeParse(req.body);
   if (!parsed.success) {
@@ -56,25 +54,28 @@ authRouter.post("/register", async (req, res) => {
     if (existing) return res.status(409).json({ error: "EMAIL_EXISTS" });
 
     const passwordHash = await bcrypt.hash(password, 10);
-    const user = await prisma.user.create({ data: { fullName, email, phone, passwordHash } });
+    const user = await prisma.user.create({
+      data: { fullName, email, phone: phone ?? null, passwordHash },
+      select: { id: true, fullName: true, email: true, role: true },
+    });
 
     const token = signToken({ id: user.id, role: user.role });
-    res.json({ token, user: { id: user.id, fullName: user.fullName, email: user.email, role: user.role } });
-  } catch (error) {
-    logger.error(error, "Registration Error");
-    res.status(500).json({ error: "INTERNAL_ERROR" });
+    return res.json({ token, user });
+  } catch (err) {
+    logger.error(err, "Registration Error");
+    return res.status(500).json({ error: "INTERNAL_ERROR" });
   }
 });
 
-/**
- * تسجيل الدخول التقليدي
- */
+// Login (password)
 authRouter.post("/login", async (req, res) => {
   const parsed = loginSchema.safeParse(req.body);
-  if (!parsed.success) return res.status(400).json({ error: "VALIDATION" });
+  if (!parsed.success) {
+    return res.status(400).json({ error: "VALIDATION", details: parsed.error.flatten() });
+  }
 
   const { email, password } = parsed.data;
-  
+
   try {
     const user = await prisma.user.findUnique({ where: { email } });
     if (!user) return res.status(401).json({ error: "INVALID_CREDENTIALS" });
@@ -83,18 +84,18 @@ authRouter.post("/login", async (req, res) => {
     if (!ok) return res.status(401).json({ error: "INVALID_CREDENTIALS" });
 
     const token = signToken({ id: user.id, role: user.role });
-    res.json({ token, user: { id: user.id, fullName: user.fullName, email: user.email, role: user.role } });
-  } catch (error) {
-    logger.error(error, "Login Error");
-    res.status(500).json({ error: "INTERNAL_ERROR" });
+    return res.json({
+      token,
+      user: { id: user.id, fullName: user.fullName, email: user.email, role: user.role },
+    });
+  } catch (err) {
+    logger.error(err, "Login Error");
+    return res.status(500).json({ error: "INTERNAL_ERROR" });
   }
 });
 
-/**
- * طلب رمز التحقق (OTP) - هذا هو المسار الذي كان يعطيك VALIDATION
- */
+// Request OTP
 authRouter.post("/request-code", otpLimiter, async (req, res) => {
-  // طباعة البيانات القادمة للمراقبة
   logger.info({ body: req.body }, "Requesting OTP Code");
 
   const parsed = requestCodeSchema.safeParse(req.body);
@@ -107,8 +108,7 @@ authRouter.post("/request-code", otpLimiter, async (req, res) => {
 
   try {
     let user = await prisma.user.findUnique({ where: { email } });
-    
-    // تحديث بيانات الهاتف إذا كان المستخدم موجوداً وبياناته ناقصة
+
     if (user && (phoneCountryCode || phoneNumber)) {
       if (!user.phoneCountryCode || !user.phoneNumber) {
         user = await prisma.user.update({
@@ -121,46 +121,43 @@ authRouter.post("/request-code", otpLimiter, async (req, res) => {
       }
     }
 
-    // إنشاء مستخدم جديد بكلمة سر عشوائية إذا لم يكن موجوداً
     if (!user) {
       const randomPass = crypto.randomBytes(16).toString("hex");
       const passwordHash = await bcrypt.hash(randomPass, 10);
+
       user = await prisma.user.create({
         data: {
-          fullName: fullName || email.split("@")[0],
+          fullName: fullName || email.split("@")[0]!,
           email,
           passwordHash,
-          phoneCountryCode,
-          phoneNumber,
+          phoneCountryCode: phoneCountryCode ?? null,
+          phoneNumber: phoneNumber ?? null,
         },
       });
     }
 
-    // توليد وتشفير الرمز
-    const code = (Math.floor(100000 + Math.random() * 900000)).toString();
+    const code = String(Math.floor(100000 + Math.random() * 900000));
     const codeHash = await bcrypt.hash(code, 10);
-    const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // صالح لـ 10 دقائق
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
 
     await prisma.emailOtp.create({ data: { email, codeHash, expiresAt } });
-    
-    // إرسال البريد الإلكتروني
-    await sendOtpEmail(email, code);
-    
-    logger.info({ email }, "OTP Sent Successfully");
-    res.json({ ok: true });
 
-  } catch (error: any) {
-    logger.error(error, "OTP Request Flow Error");
-    res.status(500).json({ error: "SEND_EMAIL_FAILED", message: error.message });
+    await sendOtpEmail(email, code);
+
+    logger.info({ email }, "OTP Sent Successfully");
+    return res.json({ ok: true });
+  } catch (err: any) {
+    logger.error(err, "OTP Request Flow Error");
+    return res.status(500).json({ error: "SEND_EMAIL_FAILED", message: err?.message });
   }
 });
 
-/**
- * التحقق من رمز OTP وتسجيل الدخول
- */
+// Verify OTP
 authRouter.post("/verify-code", async (req, res) => {
   const parsed = verifyCodeSchema.safeParse(req.body);
-  if (!parsed.success) return res.status(400).json({ error: "VALIDATION" });
+  if (!parsed.success) {
+    return res.status(400).json({ error: "VALIDATION", details: parsed.error.flatten() });
+  }
 
   const { email, code } = parsed.data;
 
@@ -183,28 +180,32 @@ authRouter.post("/verify-code", async (req, res) => {
       return res.status(400).json({ error: "CODE_INVALID" });
     }
 
-    const user = await prisma.user.findUnique({ where: { email } });
+    const user = await prisma.user.findUnique({
+      where: { email },
+      select: { id: true, fullName: true, email: true, role: true },
+    });
     if (!user) return res.status(400).json({ error: "USER_NOT_FOUND" });
 
     const token = signToken({ id: user.id, role: user.role });
-    res.json({ token, user: { id: user.id, fullName: user.fullName, email: user.email, role: user.role } });
-  } catch (error) {
-    logger.error(error, "Verify Code Error");
-    res.status(500).json({ error: "INTERNAL_ERROR" });
+    return res.json({ token, user });
+  } catch (err) {
+    logger.error(err, "Verify Code Error");
+    return res.status(500).json({ error: "INTERNAL_ERROR" });
   }
 });
 
-/**
- * الحصول على بيانات المستخدم الحالي عبر التوكن
- */
-authRouter.get("/me", requireAuth, async (req: AuthRequest, res) => {
+// Me (token)
+authRouter.get("/me", requireAuth, async (req, res) => {
   try {
-    const user = await prisma.user.findUnique({ 
-      where: { id: req.user!.id }, 
-      select: { id: true, fullName: true, email: true, role: true } 
+    const r = req as AuthRequest;
+
+    const user = await prisma.user.findUnique({
+      where: { id: r.user!.id },
+      select: { id: true, fullName: true, email: true, role: true },
     });
-    res.json({ user });
-  } catch (error) {
-    res.status(500).json({ error: "INTERNAL_ERROR" });
+
+    return res.json({ user });
+  } catch {
+    return res.status(500).json({ error: "INTERNAL_ERROR" });
   }
 });

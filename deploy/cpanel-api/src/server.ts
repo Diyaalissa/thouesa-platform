@@ -72,7 +72,37 @@ app.use((err: any, req: any, res: any, _next: any) => {
   logger.error({ err, url: req.url, body: req.body }, "CRITICAL_ERROR");
   res.status(err?.status || 500).json({ error: "INTERNAL_ERROR" });
 });
+import { prisma } from "./lib/prisma.js"; // عدّل المسار لو لزم
 
+app.get("/health", async (_req, res) => {
+  try {
+    await prisma.$queryRaw`SELECT 1`;
+    res.status(200).json({
+      success: true,
+      status: "UP",
+      database: "CONNECTED",
+      timestamp: new Date().toISOString(),
+    });
+  } catch (err: any) {
+    res.status(503).json({
+      success: false,
+      status: "DOWN",
+      database: "DISCONNECTED",
+      timestamp: new Date().toISOString(),
+      error:
+        process.env.NODE_ENV === "development"
+          ? String(err?.message || err)
+          : "Database connection failed",
+    });
+  }
+});
+app.get("/", (_req, res) => {
+  res.status(200).json({
+    ok: true,
+    service: "thouesa-api",
+    routes: ["/health"],
+  });
+});
 const port = Number(process.env.PORT || 4000);
 app.listen(port, () => {
   logger.info(`API listening on http://localhost:${port}`);
